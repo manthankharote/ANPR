@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE & Editor files
+.vscode/
+.idea/
+
+# Windows shortcuts & metadata
+*.lnk
+Thumbs.db
+Desktop.ini
+
+# Generated violation snapshot evidence (runtime images)
+violations/*.jpg
+violations/*.jpeg
+violations/*.png
+!violations/.gitkeep
+
+# Logs
+*.log
