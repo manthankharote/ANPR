@@ -68,14 +68,16 @@ async def detect_vehicles(file: UploadFile = File(...)):
 async def recognize_plate(file: UploadFile = File(...)):
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
-    crop = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    if crop is None:
-        raise HTTPException(status_code=400, detail="Invalid plate crop image.")
+    if image is None:
+        raise HTTPException(status_code=400, detail="Invalid plate image payload.")
 
-    plate_str, conf = anpr_service.recognize_plate_from_crop(crop)
-    syntax_valid = anpr_service.correct_indian_plate_syntax(plate_str) is not None
-    state_prefix = plate_str[:2] if len(plate_str) >= 2 else None
+    res = anpr_service.extract_and_read_plate(image)
+    plate_str = res["plate_number"]
+    conf = res["confidence"]
+    syntax_valid = res["syntax_valid"]
+    state_prefix = plate_str[:2] if len(plate_str) >= 2 and plate_str != "UNREADABLE" else None
 
     return ANPRResponse(
         success=True,
@@ -83,6 +85,9 @@ async def recognize_plate(file: UploadFile = File(...)):
         confidence=conf,
         syntax_valid=syntax_valid,
         state_code=state_prefix,
+        plate_box=res.get("plate_box"),
+        plate_status=res.get("plate_status", "DETECTED_READ"),
+        raw_text=res.get("raw_text"),
     )
 
 @router.post("/process/video")

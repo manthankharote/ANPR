@@ -72,11 +72,13 @@ const LiveMonitoring = () => {
               job.violations.map((v, idx) => ({
                 id: v.tracking_id || idx + 1,
                 time: v.timestamp ? v.timestamp.split(' ')[1] : 'Just now',
-                plate: v.plate_number,
+                plate: v.plate_number || 'UNREADABLE',
+                plateStatus: v.plate_status || 'DETECTED_READ',
+                verificationStatus: v.verification_status || 'PENDING_AUDIT',
                 type: v.violation_type,
                 speed: v.speed_recorded ? `${v.speed_recorded} km/h` : null,
                 fine: v.total_fine || v.primary_fine || 1000,
-                confidence: 0.92,
+                confidence: v.plate_confidence || 0.92,
                 details: v.details,
               }))
             );
@@ -451,7 +453,11 @@ const LiveMonitoring = () => {
                   className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 hover:border-slate-700 transition"
                 >
                   <div className="flex items-center justify-between mb-1.5">
-                    <span className="font-mono text-xs font-bold bg-white text-slate-900 px-1.5 py-0.5 rounded">
+                    <span className={`font-mono text-xs font-bold px-1.5 py-0.5 rounded ${
+                      ev.plate === 'UNREADABLE'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        : 'bg-white text-slate-900'
+                    }`}>
                       {ev.plate}
                     </span>
                     <span className="text-[10px] text-slate-400">{ev.time}</span>

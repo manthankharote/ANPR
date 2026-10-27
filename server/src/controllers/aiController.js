@@ -156,8 +156,10 @@ export const getJobStatus = async (req, res, next) => {
           for (const v of aiData.violations) {
             const vKey = `${v.tracking_id}_${v.violation_type}`;
             if (!persistedKeys.includes(vKey)) {
-              // Lookup vehicle in VAHAN database
-              const vehicle = await dataStore.getVehicleByPlate(v.plate_number);
+              // Lookup vehicle in VAHAN database (only if plate is readable)
+              const isUnreadable = !v.plate_number || v.plate_number === 'UNREADABLE' || v.plate_number === 'UNKNOWN';
+              const cleanPlate = isUnreadable ? 'UNREADABLE' : v.plate_number.toUpperCase();
+              const vehicle = !isUnreadable ? await dataStore.getVehicleByPlate(cleanPlate) : null;
 
               let secondary_fine = 0;
               const secondaryNotes = [];
@@ -174,18 +176,26 @@ export const getJobStatus = async (req, res, next) => {
 
               const primaryFine = v.primary_fine || 1000;
               const totalFine = primaryFine + secondary_fine;
-              const detailsText = secondaryNotes.length > 0
-                ? `${v.details || v.violation_type} [Secondary Penalty: ${secondaryNotes.join(', ')}]`
-                : (v.details || v.violation_type);
+              let detailsText = v.details || v.violation_type;
+              if (secondaryNotes.length > 0) {
+                detailsText += ` [Secondary Penalty: ${secondaryNotes.join(', ')}]`;
+              }
+              if (isUnreadable) {
+                detailsText += ` [ANPR Note: License plate illegible - flagged for manual officer photographic review]`;
+              }
 
               const snapshotPath = v.evidence_path
                 ? (v.evidence_path.startsWith('/') ? v.evidence_path : `/evidence/${path.basename(v.evidence_path)}`)
                 : '';
 
+              const ownerName = isUnreadable
+                ? 'Unidentified Vehicle (Manual Audit Required)'
+                : (vehicle?.owner_name || `Citizen Owner (${cleanPlate})`);
+
               await dataStore.createViolation({
                 tracking_id: v.tracking_id,
-                plate_number: v.plate_number,
-                owner_name: vehicle?.owner_name || `Citizen Owner (${v.plate_number})`,
+                plate_number: cleanPlate,
+                owner_name: ownerName,
                 violation_type: v.violation_type,
                 speed_recorded: v.speed_recorded || null,
                 primary_fine: primaryFine,
@@ -194,9 +204,14 @@ export const getJobStatus = async (req, res, next) => {
                 snapshot_path: snapshotPath,
                 challan_status: 'ISSUED',
                 review_status: 'PENDING',
-                sms_status: 'SIMULATED',
+                sms_status: isUnreadable ? 'FAILED' : 'SIMULATED',
                 details: detailsText,
                 source_video: job.filename || 'sample_traffic.mp4',
+                plate_box: v.plate_box || null,
+                plate_confidence: v.plate_confidence || 0.0,
+                plate_status: v.plate_status || (isUnreadable ? 'DETECTED_UNREADABLE' : 'DETECTED_READ'),
+                raw_ocr_text: v.raw_ocr_text || '',
+                verification_status: (!isUnreadable && v.verification_status === 'VERIFIED_ANPR' && (v.plate_confidence || 0) >= 0.60) ? 'VERIFIED_ANPR' : 'UNVERIFIED_MANUAL_REVIEW',
               });
 
               persistedKeys.push(vKey);

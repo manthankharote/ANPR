@@ -89,6 +89,28 @@ const violationSchema = new mongoose.Schema(
       type: Number,
       default: 0.92,
     },
+    plate_box: {
+      type: [Number],
+      default: null,
+    },
+    plate_confidence: {
+      type: Number,
+      default: 0.0,
+    },
+    plate_status: {
+      type: String,
+      enum: ['DETECTED_READ', 'DETECTED_UNREADABLE', 'NO_PLATE', 'UNREADABLE'],
+      default: 'DETECTED_READ',
+    },
+    raw_ocr_text: {
+      type: String,
+      default: '',
+    },
+    verification_status: {
+      type: String,
+      enum: ['VERIFIED_ANPR', 'UNVERIFIED_MANUAL_REVIEW', 'PENDING_AUDIT'],
+      default: 'PENDING_AUDIT',
+    },
   },
   { timestamps: true }
 );

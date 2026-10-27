@@ -71,8 +71,16 @@ Interactive Swagger Docs: `http://localhost:8000/docs`
 
 * `GET /health`: System vitals, PyTorch CUDA detection, YOLO model status.
 * `POST /detect/vehicles`: Multipart frame upload for real-time bounding box and violation detection.
+  * Response attributes per detection:
+    * `plate_box`: `[x1, y1, x2, y2]` bounding coordinates of localized plate.
+    * `plate_confidence`: `float` detection confidence from `license_plate_detector.pt`.
+    * `plate_status`: `"DETECTED_READ" | "DETECTED_UNREADABLE" | "NO_PLATE"`.
+    * `raw_ocr_text`: Pre-cleaned string output from EasyOCR.
+    * `verification_status`: `"VERIFIED_ANPR" | "UNVERIFIED_MANUAL_REVIEW"`.
 * `POST /anpr/recognize`: Upload crop for OCR plate reading and Indian syntax correction.
+  * Response: `{ success, plate_number, confidence, syntax_valid, state_code, plate_box, plate_status, raw_text }`.
 * `POST /process/video`: Spawns async background video inference thread.
 * `GET /jobs/{job_id}`: Retrieves async job progress percentage and detected offenses list.
 * `GET /signal/state`: Retrieves mathematical 4-way adaptive traffic signal state.
 * `POST /signal/override`: Overrides signal state for emergency vehicle priority.
+

@@ -95,7 +95,7 @@ class AIModernDetector:
             if not os.path.exists(model_path):
                 model_path = "yolov8n.pt"
 
-        logger.info(f"Loading YOLOv8 model from {model_path}...")
+        logger.info(f"Loading YOLOv8 vehicle model from {model_path}...")
         self.model = YOLO(model_path)
         self.tracker = SimpleCentroidTracker()
         self.track_history = defaultdict(lambda: deque(maxlen=45))
@@ -109,6 +109,9 @@ class AIModernDetector:
         self.green_duration = 10.0
         self.red_duration = 6.0
         self.speed_limit = config.SPEED_LIMIT_KMH
+
+        # Warm up plate model
+        anpr_service.get_plate_detector()
 
     def set_signal_state(self, state: str, auto_cycle: bool = False):
         self.signal_state = state.upper()
@@ -138,19 +141,25 @@ class AIModernDetector:
     def _mark_violation(self, track_id: int, violation_type: str, now: float):
         self.violated_tracks[track_id][violation_type] = now
 
-    def _get_plate(self, track_id: int, vehicle_crop: np.ndarray) -> str:
-        if track_id in self.assigned_plates:
-            return self.assigned_plates[track_id]
+    def _get_plate_info(self, track_id: int, vehicle_crop: np.ndarray, veh_box: Tuple[int, int, int, int]) -> Dict[str, Any]:
+        existing = self.assigned_plates.get(track_id)
+        if existing and existing.get("plate_status") == "DETECTED_READ" and existing.get("syntax_valid"):
+            return existing
 
-        plate_str, _ = anpr_service.recognize_plate_from_crop(vehicle_crop, track_id)
-        self.assigned_plates[track_id] = plate_str
-        return plate_str
+        plate_info = anpr_service.extract_and_read_plate(vehicle_crop, veh_box=list(veh_box), track_id=track_id)
+
+        # If previous was readable, retain it over a worse reading
+        if existing and existing.get("plate_status") == "DETECTED_READ" and plate_info.get("plate_status") != "DETECTED_READ":
+            return existing
+
+        self.assigned_plates[track_id] = plate_info
+        return plate_info
 
     def _save_evidence(
         self,
         full_frame: np.ndarray,
         vehicle_box: Tuple[int, int, int, int],
-        plate_str: str,
+        plate_info: Dict[str, Any],
         violation_type: str,
         speed_recorded: Optional[float],
         track_id: int
@@ -158,16 +167,42 @@ class AIModernDetector:
         snapshot = full_frame.copy()
         x1, y1, x2, y2 = vehicle_box
         h, w = snapshot.shape[:2]
+        plate_str = plate_info.get("plate_number", "UNREADABLE")
+        plate_status = plate_info.get("plate_status", "UNREADABLE")
+        plate_crop = plate_info.get("plate_crop")
+        global_pbox = plate_info.get("plate_box")
 
-        # Draw red bounding box
+        # Draw vehicle bounding box (Red)
         cv2.rectangle(snapshot, (x1, y1), (x2, y2), (0, 0, 255), 3)
 
+        # Draw license plate bounding box if localized (Cyan)
+        if global_pbox and len(global_pbox) == 4:
+            gpx1, gpy1, gpx2, gpy2 = global_pbox
+            cv2.rectangle(snapshot, (gpx1, gpy1), (gpx2, gpy2), (255, 255, 0), 2)
+
         # Inset zoomed license plate at top right
-        pw, ph = 240, 80
-        cv2.rectangle(snapshot, (w - pw - 20, 20), (w - 20, 20 + ph), (255, 255, 255), -1)
+        pw, ph = 260, 90
+        inset_x1 = w - pw - 20
+        inset_y1 = 20
+        inset_x2 = w - 20
+        inset_y2 = 20 + ph
+
+        # Dark glass card background
+        cv2.rectangle(snapshot, (inset_x1, inset_y1), (inset_x2, inset_y2), (20, 24, 33), -1)
+        cv2.rectangle(snapshot, (inset_x1, inset_y1), (inset_x2, inset_y2), (0, 165, 255), 2)
+
+        if plate_crop is not None and plate_crop.size > 0:
+            try:
+                p_display = cv2.resize(plate_crop, (pw - 20, ph - 38))
+                snapshot[inset_y1 + 8 : inset_y1 + 8 + p_display.shape[0], inset_x1 + 10 : inset_x1 + 10 + p_display.shape[1]] = p_display
+            except Exception:
+                pass
+
+        status_color = (0, 255, 120) if plate_status == "DETECTED_READ" else (0, 165, 255)
+        display_label = f"PLATE: {plate_str}" if plate_str != "UNREADABLE" else "PLATE: [UNREADABLE]"
         cv2.putText(
-            snapshot, f"PLATE: {plate_str}", (w - pw - 10, ph + 42),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2
+            snapshot, display_label, (inset_x1 + 10, inset_y2 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, status_color, 2
         )
 
         # Bottom statutory evidence banner
@@ -177,22 +212,23 @@ class AIModernDetector:
 
         timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S")
         speed_text = f" | Speed: {speed_recorded:.1f} km/h" if speed_recorded else ""
-        text_line1 = f"VIOLATION: {violation_type.upper()} | VEHICLE: {plate_str} (Track #{track_id}){speed_text}"
-        text_line2 = f"TIME: {timestamp_str} | CAM: Surveillance Cam #04 Junction | STATUS: E-CHALLAN STATUTORY RECORD"
+        is_verified_anpr = (plate_status == "DETECTED_READ" and plate_info.get("syntax_valid") and plate_info.get("confidence", 0.0) >= 0.60)
+        ver_badge = "[VERIFIED ANPR]" if is_verified_anpr else "[AUDIT REQUIRED]"
+        text_line1 = f"VIOLATION: {violation_type.upper()} | VEHICLE: {plate_str} (Track #{track_id}){speed_text} {ver_badge}"
+        text_line2 = f"TIME: {timestamp_str} | CAM: Surveillance Cam #04 Junction | STATUS: STATUTORY E-CHALLAN RECORD"
 
-        cv2.putText(snapshot, text_line1, (20, h - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 165, 255), 2)
-        cv2.putText(snapshot, text_line2, (20, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (200, 200, 200), 1)
+        cv2.putText(snapshot, text_line1, (20, h - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 165, 255), 2)
+        cv2.putText(snapshot, text_line2, (20, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 1)
 
         filename = f"evidence_{int(time.time() * 1000)}_{track_id}_{violation_type.replace(' ', '_').replace('/', '_')}.jpg"
         filepath = os.path.join(config.STORAGE_EVIDENCE_DIR, filename)
         cv2.imwrite(filepath, snapshot)
-        # Return web-accessible relative path to avoid leaking server filesystem paths
         return f"/evidence/{filename}"
 
     def _extract_synthetic_detections(self, frame: np.ndarray):
         h, w = frame.shape[:2]
         road_mask = np.zeros((h, w), dtype=np.uint8)
-        road_mask[:, 130:1150] = 255
+        road_mask[:, int(w * 0.10):int(w * 0.90)] = 255
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         sat = hsv[:, :, 1]
@@ -217,20 +253,15 @@ class AIModernDetector:
                 continue
 
             bx, by, bw, bh = cv2.boundingRect(cnt)
-            if bw > 800 or bh < 40:
+            if bw > (w * 0.6) or bh < 30:
                 continue
 
             aspect = float(bw) / float(bh) if bh > 0 else 0
-            if aspect < 0.65 and bw < 70:
+            if aspect < 0.65 and bw < (w * 0.08):
                 v_type = "Motorcycle"
                 cls_id = 3
-                if bw >= 45 and bh >= 100:
-                    if bx < 800:
-                        person_boxes.append((bx, by + 10, bx + bw, by + 45))
-                        person_boxes.append((bx, by + 45, bx + bw, by + 80))
-                        person_boxes.append((bx, by + 80, bx + bw, by + 115))
-                    else:
-                        person_boxes.append((bx, by + 15, bx + bw, by + 75))
+                if bw >= 40 and bh >= 80:
+                    person_boxes.append((bx, by + 10, bx + bw, by + 45))
             else:
                 v_type = "Car"
                 cls_id = 2
@@ -254,6 +285,12 @@ class AIModernDetector:
         h, w = frame.shape[:2]
         now = timestamp if timestamp is not None else time.time()
         self.update_traffic_signal_cycle(now)
+
+        # Scale detection gates dynamically based on frame height
+        scale_y = h / 720.0
+        stop_y = int(480 * scale_y)
+        speed_y1 = int(320 * scale_y)
+        speed_y2 = int(520 * scale_y)
 
         detected_vehicles = []
         new_violations = []
@@ -286,9 +323,9 @@ class AIModernDetector:
                     elif cls_id == config.CELL_PHONE_CLASS_ID:
                         phone_boxes.append(tuple(xyxy))
         except Exception as e:
-            logger.warning(f"Inference warning: {e}")
+            logger.warning(f"Vehicle inference warning: {e}")
 
-        # If real-world YOLO detects 0 objects (e.g. synthetic simulation frames), invoke color-blob fallback
+        # If zero vehicles found (e.g. 2D synthetic simulation frames), invoke color-blob fallback
         if len(raw_detections) == 0:
             synth_dets, synth_persons, synth_phones = self._extract_synthetic_detections(frame)
             raw_detections.extend(synth_dets)
@@ -307,9 +344,12 @@ class AIModernDetector:
             cy = (y1 + y2) // 2
             v_type = veh["type"]
 
-            # Vehicle Crop & Plate
+            # Vehicle Crop & Optical Plate Extraction
             vh_crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
-            plate_number = self._get_plate(tid, vh_crop)
+            plate_info = self._get_plate_info(tid, vh_crop, veh["box"])
+            plate_number = plate_info.get("plate_number", "UNREADABLE")
+            plate_status = plate_info.get("plate_status", "UNREADABLE")
+            ver_status = "VERIFIED_ANPR" if (plate_status == "DETECTED_READ" and plate_info.get("syntax_valid") and plate_info.get("confidence", 0.0) >= 0.60) else "UNVERIFIED_MANUAL_REVIEW"
 
             detected_vehicles.append({
                 "track_id": tid,
@@ -318,6 +358,10 @@ class AIModernDetector:
                 "box": [x1, y1, x2, y2],
                 "confidence": 0.92,
                 "plate_number": plate_number,
+                "plate_box": plate_info.get("plate_box"),
+                "plate_confidence": plate_info.get("confidence", 0.0),
+                "plate_status": plate_status,
+                "raw_ocr_text": plate_info.get("raw_text", ""),
             })
 
             # History update
@@ -328,12 +372,11 @@ class AIModernDetector:
             # 1. Red Light Jump Rule
             # -------------------------------------------------------------------
             if self.signal_state == "RED" and len(history) >= 2:
-                stop_y = config.STOP_LINE[0][1]
                 prev_cx, prev_cy, _ = history[-2]
                 if prev_cy < stop_y and cy >= (stop_y - config.STOP_LINE_TOLERANCE_PX):
                     if not self._is_cooldown_active(tid, "Red Light Jump", now):
                         self._mark_violation(tid, "Red Light Jump", now)
-                        ev_path = self._save_evidence(frame, veh["box"], plate_number, "Red Light Jump", None, tid)
+                        ev_path = self._save_evidence(frame, veh["box"], plate_info, "Red Light Jump", None, tid)
                         new_violations.append({
                             "tracking_id": tid,
                             "plate_number": plate_number,
@@ -342,17 +385,20 @@ class AIModernDetector:
                             "total_fine": config.FINES.get("Red Light Jump", 1000),
                             "evidence_path": ev_path,
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "details": f"Crossed Stop Line at Y={stop_y} during active RED signal phase",
+                            "details": f"Crossed Stop Line at Y={stop_y}px during active RED signal phase",
+                            "plate_box": plate_info.get("plate_box"),
+                            "plate_confidence": plate_info.get("confidence", 0.0),
+                            "plate_status": plate_status,
+                            "raw_ocr_text": plate_info.get("raw_text", ""),
+                            "verification_status": ver_status,
                         })
 
             # -------------------------------------------------------------------
             # 2. Over-Speeding Rule
             # -------------------------------------------------------------------
-            line1_y = config.SPEED_LINE_1[0][1]
-            line2_y = config.SPEED_LINE_2[0][1]
-            if cy >= line1_y and tid not in self.speed_entry_times:
+            if cy >= speed_y1 and tid not in self.speed_entry_times:
                 self.speed_entry_times[tid] = now
-            if cy >= line2_y and tid in self.speed_entry_times and tid not in self.calculated_speeds:
+            if cy >= speed_y2 and tid in self.speed_entry_times and tid not in self.calculated_speeds:
                 dt = now - self.speed_entry_times[tid]
                 if dt > 0.04:
                     speed_kmh = round((config.SPEED_DISTANCE_METERS / dt) * 3.6, 1)
@@ -360,7 +406,7 @@ class AIModernDetector:
                     if speed_kmh > self.speed_limit:
                         if not self._is_cooldown_active(tid, "Over-Speeding", now):
                             self._mark_violation(tid, "Over-Speeding", now)
-                            ev_path = self._save_evidence(frame, veh["box"], plate_number, "Over-Speeding", speed_kmh, tid)
+                            ev_path = self._save_evidence(frame, veh["box"], plate_info, "Over-Speeding", speed_kmh, tid)
                             new_violations.append({
                                 "tracking_id": tid,
                                 "plate_number": plate_number,
@@ -371,6 +417,11 @@ class AIModernDetector:
                                 "evidence_path": ev_path,
                                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                                 "details": f"Clocked at {speed_kmh} km/h (Permissible Limit: {self.speed_limit} km/h)",
+                                "plate_box": plate_info.get("plate_box"),
+                                "plate_confidence": plate_info.get("confidence", 0.0),
+                                "plate_status": plate_status,
+                                "raw_ocr_text": plate_info.get("raw_text", ""),
+                                "verification_status": ver_status,
                             })
 
             # -------------------------------------------------------------------
@@ -383,7 +434,7 @@ class AIModernDetector:
                 if dist > 35 and dy < -15:
                     if not self._is_cooldown_active(tid, "Wrong-Lane / Wrong-Way Driving", now):
                         self._mark_violation(tid, "Wrong-Lane / Wrong-Way Driving", now)
-                        ev_path = self._save_evidence(frame, veh["box"], plate_number, "Wrong-Lane / Wrong-Way Driving", None, tid)
+                        ev_path = self._save_evidence(frame, veh["box"], plate_info, "Wrong-Lane / Wrong-Way Driving", None, tid)
                         new_violations.append({
                             "tracking_id": tid,
                             "plate_number": plate_number,
@@ -393,6 +444,11 @@ class AIModernDetector:
                             "evidence_path": ev_path,
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "details": "Vehicle navigating in reverse against designated roadway flow vector",
+                            "plate_box": plate_info.get("plate_box"),
+                            "plate_confidence": plate_info.get("confidence", 0.0),
+                            "plate_status": plate_status,
+                            "raw_ocr_text": plate_info.get("raw_text", ""),
+                            "verification_status": ver_status,
                         })
 
             # -------------------------------------------------------------------
@@ -406,7 +462,7 @@ class AIModernDetector:
                 if riders > 2:
                     if not self._is_cooldown_active(tid, "Triple Riding", now):
                         self._mark_violation(tid, "Triple Riding", now)
-                        ev_path = self._save_evidence(frame, veh["box"], plate_number, "Triple Riding", None, tid)
+                        ev_path = self._save_evidence(frame, veh["box"], plate_info, "Triple Riding", None, tid)
                         new_violations.append({
                             "tracking_id": tid,
                             "plate_number": plate_number,
@@ -416,6 +472,11 @@ class AIModernDetector:
                             "evidence_path": ev_path,
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "details": f"Detected {riders} occupants on two-wheeler (Statutory limit: 2)",
+                            "plate_box": plate_info.get("plate_box"),
+                            "plate_confidence": plate_info.get("confidence", 0.0),
+                            "plate_status": plate_status,
+                            "raw_ocr_text": plate_info.get("raw_text", ""),
+                            "verification_status": ver_status,
                         })
 
                 # ---------------------------------------------------------------
@@ -434,10 +495,10 @@ class AIModernDetector:
                                 gray_head = cv2.cvtColor(head_crop, cv2.COLOR_BGR2GRAY)
                                 edges = cv2.Canny(gray_head, 50, 150)
                                 edge_ratio = np.count_nonzero(edges) / float(edges.size)
-                                if edge_ratio > 0.12 or px1 > 800:
+                                if edge_ratio > 0.12:
                                     if not self._is_cooldown_active(tid, "No Helmet", now):
                                         self._mark_violation(tid, "No Helmet", now)
-                                        ev_path = self._save_evidence(frame, veh["box"], plate_number, "No Helmet", None, tid)
+                                        ev_path = self._save_evidence(frame, veh["box"], plate_info, "No Helmet", None, tid)
                                         new_violations.append({
                                             "tracking_id": tid,
                                             "plate_number": plate_number,
@@ -447,6 +508,11 @@ class AIModernDetector:
                                             "evidence_path": ev_path,
                                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                                             "details": "Rider operating two-wheeler without protective headgear",
+                                            "plate_box": plate_info.get("plate_box"),
+                                            "plate_confidence": plate_info.get("confidence", 0.0),
+                                            "plate_status": plate_status,
+                                            "raw_ocr_text": plate_info.get("raw_text", ""),
+                                            "verification_status": ver_status,
                                         })
                                         break
 
@@ -457,7 +523,7 @@ class AIModernDetector:
                 if max(x1, phx1) < min(x2, phx2) and max(y1, phy1) < min(y2, phy2):
                     if not self._is_cooldown_active(tid, "Mobile Phone Usage", now):
                         self._mark_violation(tid, "Mobile Phone Usage", now)
-                        ev_path = self._save_evidence(frame, veh["box"], plate_number, "Mobile Phone Usage", None, tid)
+                        ev_path = self._save_evidence(frame, veh["box"], plate_info, "Mobile Phone Usage", None, tid)
                         new_violations.append({
                             "tracking_id": tid,
                             "plate_number": plate_number,
@@ -466,7 +532,13 @@ class AIModernDetector:
                             "total_fine": config.FINES.get("Mobile Phone Usage", 1500),
                             "evidence_path": ev_path,
                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "details": "Operator detected handling mobile device during active vehicle transit",
+                            "details": "Operator handling mobile phone device while in traffic stream",
+                            "plate_box": plate_info.get("plate_box"),
+                            "plate_confidence": plate_info.get("confidence", 0.0),
+                            "plate_status": plate_status,
+                            "raw_ocr_text": plate_info.get("raw_text", ""),
+                            "verification_status": ver_status,
                         })
+                        break
 
         return detected_vehicles, new_violations

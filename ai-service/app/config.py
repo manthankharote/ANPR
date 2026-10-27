@@ -8,6 +8,7 @@ ROOT_DIR = AI_SERVICE_DIR.parent
 
 MODELS_DIR = APP_DIR / "models"
 YOLO_MODEL_PATH = str(MODELS_DIR / "yolov8n.pt")
+PLATE_MODEL_PATH = str(MODELS_DIR / "license_plate_detector.pt")
 STORAGE_UPLOADS_DIR = str(ROOT_DIR / "storage" / "uploads")
 STORAGE_EVIDENCE_DIR = str(ROOT_DIR / "storage" / "evidence")
 
@@ -17,6 +18,7 @@ os.makedirs(STORAGE_EVIDENCE_DIR, exist_ok=True)
 
 # Detection & Tracking Config
 DETECTION_CONFIDENCE = float(os.getenv("DETECTION_CONFIDENCE", "0.40"))
+PLATE_DETECTION_CONFIDENCE = float(os.getenv("PLATE_DETECTION_CONFIDENCE", "0.25"))
 IOU_THRESHOLD = 0.45
 VEHICLE_CLASSES = [2, 3, 5, 7]  # car, motorcycle, bus, truck
 TWO_WHEELER_CLASSES = [1, 3]    # bicycle, motorcycle

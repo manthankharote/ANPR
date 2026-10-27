@@ -56,7 +56,14 @@ storage/uploads/*
 # Models & Databases: Exclude general large binaries, preserve designated project assets
 *.pt
 !ai-service/app/models/yolov8n.pt
+!ai-service/app/models/license_plate_detector.pt
 *.db
 !legacy/traffic_system.db
 *.sqlite
 *.sqlite3
+
+# Test outputs & temporary audit frames
+tests/audit_frames/
+tests/real_video_audit/
+
+

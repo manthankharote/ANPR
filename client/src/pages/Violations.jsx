@@ -263,9 +263,18 @@ const Violations = () => {
                   <td className="py-3.5 px-4 font-mono text-slate-400">#E-CH-2026-{v.id}</td>
                   <td className="py-3.5 px-4 text-slate-400">{v.timestamp}</td>
                   <td className="py-3.5 px-4">
-                    <span className="font-mono font-bold bg-white text-slate-900 px-2 py-0.5 rounded border border-black text-xs">
+                    <span className={`font-mono font-bold px-2 py-0.5 rounded border text-xs ${
+                      v.plate_number === 'UNREADABLE'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'bg-white text-slate-900 border-black'
+                    }`}>
                       {v.plate_number}
                     </span>
+                    {v.verification_status && (
+                      <span className={`block text-[9px] font-mono mt-0.5 ${v.verification_status === 'VERIFIED_ANPR' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {v.verification_status === 'VERIFIED_ANPR' ? '✓ ANPR' : '⚠ AUDIT'}
+                      </span>
+                    )}
                   </td>
                   <td className="py-3.5 px-4 font-semibold text-white">{v.owner_name}</td>
                   <td className="py-3.5 px-4">

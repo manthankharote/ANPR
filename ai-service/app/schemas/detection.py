@@ -13,7 +13,11 @@ class VehicleDetectionItem(BaseModel):
     type: str
     box: List[int]
     confidence: float
-    plate_number: Optional[str] = None
+    plate_number: Optional[str] = "UNREADABLE"
+    plate_box: Optional[List[int]] = None
+    plate_confidence: Optional[float] = 0.0
+    plate_status: Optional[str] = "UNREADABLE"  # "DETECTED_READ", "DETECTED_UNREADABLE", "NO_PLATE"
+    raw_ocr_text: Optional[str] = None
 
 class ViolationItem(BaseModel):
     tracking_id: int
@@ -25,6 +29,11 @@ class ViolationItem(BaseModel):
     evidence_path: Optional[str] = None
     timestamp: str
     details: str
+    plate_box: Optional[List[int]] = None
+    plate_confidence: Optional[float] = 0.0
+    plate_status: Optional[str] = "UNREADABLE"
+    raw_ocr_text: Optional[str] = None
+    verification_status: Optional[str] = "PENDING_AUDIT"
 
 class DetectionResponse(BaseModel):
     success: bool
@@ -43,6 +52,9 @@ class ANPRResponse(BaseModel):
     confidence: float
     syntax_valid: bool
     state_code: Optional[str] = None
+    plate_box: Optional[List[int]] = None
+    plate_status: str = "DETECTED_READ"
+    raw_text: Optional[str] = None
 
 class VideoProcessRequest(BaseModel):
     job_id: str
